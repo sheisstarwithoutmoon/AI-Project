@@ -318,7 +318,7 @@ class OthelloUI:
 
 if __name__ == "__main__":
     # Train the agent first
-    trained_agent = train_agent(num_episodes=200)  # Matches paper's Othello setting 250000
+    trained_agent = train_agent(num_episodes=2500)  # Matches paper's Othello setting 250000
     # Start the game UI with the trained agent
     root = tk.Tk()
     root.title("Othello with Trained TD-FARL and MCTS")

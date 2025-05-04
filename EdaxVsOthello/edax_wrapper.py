@@ -1,5 +1,6 @@
 import subprocess
 import time
+import re
 
 class EdaxWrapper:
     def __init__(self, edax_path='./edax.exe', depth=5):
@@ -39,24 +40,46 @@ class EdaxWrapper:
             return '0000'
         if not self.send_cmd('go'):
             return '0000'
+        
         start_time = time.time()
         timeout = 10
+        move_pattern = re.compile(r'[a-h][1-8]', re.IGNORECASE)
+        
         while time.time() - start_time < timeout:
             line = self.process.stdout.readline().strip()
             print(f"Edax output: {line}")
+            
+            # Look for 'bestmove' format output
             if line.startswith('bestmove'):
                 move = line.split()[1].lower()
                 print(f"Received bestmove: {move}")
                 return move
+                
+            # Look for the 'Edax plays X' format
             if 'plays' in line.lower():
-                move = line.split()[-1].lower()
-                print(f"Parsed move from 'plays': {move}")
-                return move
+                parts = line.split()
+                for i, part in enumerate(parts):
+                    if part.lower() == 'plays' and i+1 < len(parts):
+                        move = parts[i+1].lower()
+                        print(f"Parsed move from 'plays': {move}")
+                        if move_pattern.match(move):
+                            return move
+            
+            # Look for a direct move in Edax book format
+            if ' ' in line:
+                fields = line.split()
+                for field in fields:
+                    if move_pattern.match(field.lower()):
+                        print(f"Found potential move in book output: {field.lower()}")
+                        return field.lower()
+                        
             if not line or '>' in line:
                 continue
+                
             if 'error' in line.lower() or 'invalid' in line.lower():
                 print("Edax reported an error")
                 return '0000'
+                
         print("Timeout waiting for Edax move")
         return '0000'
 

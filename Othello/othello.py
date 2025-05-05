@@ -3,6 +3,8 @@ import random
 import math
 import copy
 import numpy as np
+import pickle
+import os
 
 # Constants
 BLACK = 1
@@ -141,6 +143,31 @@ class TDAgent:
             self.weights[i] += delta_theta
             self.Ni[i] += delta_theta
             self.Ai[i] += abs(delta_theta)
+            
+    def save(self, filename="othello_agent.pkl", total_episodes=0):
+        with open(filename, "wb") as f:
+            pickle.dump({
+                "weights": self.weights,
+                "Ni": self.Ni,
+                "Ai": self.Ai,
+                "total_episodes": total_episodes
+            }, f)
+        print("Agent saved to", filename)
+
+    def load(self, filename="othello_agent.pkl"):
+        if os.path.exists(filename):
+            with open(filename, "rb") as f:
+                data = pickle.load(f)
+                self.weights = data["weights"]
+                self.Ni = data["Ni"]
+                self.Ai = data["Ai"]
+                # Handle backward compatibility with older saved files
+                total_episodes = data.get("total_episodes", 0)
+            print(f"Pre-trained agent loaded from {filename} (Trained for {total_episodes} episodes)")
+            return True, total_episodes
+        else:
+            print("No pre-trained agent found.")
+            return False, 0
 
 # MCTS Node
 class MCTSNode:
@@ -229,13 +256,21 @@ class MCTS:
         return best_child.move if best_child else None
 
 # Training Function
-def train_agent(num_episodes=250000):
+def train_agent(num_episodes=250000, start_episode=0):
     agent = TDAgent()
+    loaded, total_episodes = agent.load()  # Try to load existing agent
+    
+    # Start from where we left off
+    current_total_episodes = total_episodes
+    
     epsilon_start, epsilon_end = 0.2, 0.1  # Exploration rate decay
-    print("Starting training...")
+    print(f"Starting training from episode {start_episode}...")
     for episode in range(num_episodes):
         game = Othello()
-        epsilon = epsilon_start - (epsilon_start - epsilon_end) * episode / num_episodes
+        # Calculate epsilon based on total episodes trained
+        relative_progress = (current_total_episodes + episode) / (current_total_episodes + num_episodes)
+        epsilon = epsilon_start - (epsilon_start - epsilon_end) * relative_progress
+        
         state_history = {BLACK: [], WHITE: []}
         while not game.is_game_over():
             player = game.current_player
@@ -257,9 +292,18 @@ def train_agent(num_episodes=250000):
             last_state, _, _ = state_history[player][-1] if state_history[player] else (game.board, game.board, 0)
             agent.update_weights(last_state, last_state, reward if player == BLACK else -reward, player, is_final=True)
 
-        if episode % 10 == 0:
-            print(f"Episode {episode}/{num_episodes} completed")
-    print("Training completed.")
+        if (episode + 1) % 10 == 0:
+            print(f"Episode {episode + 1}/{num_episodes} completed")
+            
+        # Save periodically (every 100 episodes)
+        if (episode + 1) % 100 == 0:
+            new_total = current_total_episodes + episode + 1
+            agent.save(total_episodes=new_total)
+            
+    # Final save with updated episode count
+    new_total_episodes = current_total_episodes + num_episodes
+    print(f"Training completed. Total episodes: {new_total_episodes}")
+    agent.save(total_episodes=new_total_episodes)
     return agent
 
 # UI with Tkinter
@@ -269,10 +313,33 @@ class OthelloUI:
         self.game = Othello()
         self.td_agent = td_agent
         self.mcts = MCTS(self.td_agent, iterations=100)
-        self.canvas = tk.Canvas(root, width=400, height=400)
-        self.canvas.pack()
+        
+        # Create main frame
+        self.main_frame = tk.Frame(root)
+        self.main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Status label
+        self.status_label = tk.Label(self.main_frame, text="Your turn (Black)", font=("Arial", 12))
+        self.status_label.pack(pady=5)
+        
+        # Game canvas
+        self.canvas = tk.Canvas(self.main_frame, width=400, height=400)
+        self.canvas.pack(pady=10)
+        
+        # Control buttons
+        self.button_frame = tk.Frame(self.main_frame)
+        self.button_frame.pack(pady=10)
+        
+        self.new_game_btn = tk.Button(self.button_frame, text="New Game", command=self.new_game)
+        self.new_game_btn.pack(side=tk.LEFT, padx=5)
+        
         self.draw_board()
         self.canvas.bind("<Button-1>", self.human_move)
+
+    def new_game(self):
+        self.game = Othello()
+        self.draw_board()
+        self.status_label.config(text="Your turn (Black)")
 
     def draw_board(self):
         self.canvas.delete("all")
@@ -285,10 +352,17 @@ class OthelloUI:
                     self.canvas.create_oval(x1 + 5, y1 + 5, x2 - 5, y2 - 5, fill="black")
                 elif self.game.board[i][j] == WHITE:
                     self.canvas.create_oval(x1 + 5, y1 + 5, x2 - 5, y2 - 5, fill="white")
+        
+        # Highlight legal moves for current player
         legal_moves = self.game.get_legal_moves(self.game.current_player)
         for r, c in legal_moves:
             x, y = c * 50 + 25, r * 50 + 25
             self.canvas.create_oval(x - 5, y - 5, x + 5, y + 5, outline="red")
+        
+        # Display current score
+        black_score, white_score = self.game.get_score()
+        score_text = f"Black: {black_score}  White: {white_score}"
+        self.canvas.create_text(200, 380, text=score_text, font=("Arial", 12), fill="white")
 
     def human_move(self, event):
         if self.game.current_player != BLACK or self.game.is_game_over():
@@ -299,28 +373,124 @@ class OthelloUI:
             self.game.make_move(row, col, BLACK)
             self.game.current_player = WHITE
             self.draw_board()
+            self.status_label.config(text="AI thinking...")
+            self.root.update()
             self.root.after(100, self.ai_move)
 
     def ai_move(self):
-        if self.game.current_player != WHITE or self.game.is_game_over():
+        if self.game.is_game_over():
+            self.game_over()
             return
+            
+        if self.game.current_player != WHITE:
+            return
+            
+        legal_moves = self.game.get_legal_moves(WHITE)
+        if not legal_moves:
+            self.game.current_player = BLACK
+            self.draw_board()
+            self.status_label.config(text="Your turn (Black)")
+            
+            # Check if game is now over
+            if self.game.is_game_over():
+                self.game_over()
+            return
+            
         move = self.mcts.get_best_move(self.game)
         if move:
             self.game.make_move(move[0], move[1], WHITE)
         self.game.current_player = BLACK
         self.draw_board()
+        
+        # Check if the game is over
         if self.game.is_game_over():
-            black_score, white_score = self.game.get_score()
-            result = f"Game Over! Black: {black_score}, White: {white_score}"
-            self.canvas.create_text(200, 200, text=result, font=("Arial", 20), fill="yellow")
+            self.game_over()
         else:
-            self.root.after(100, self.ai_move)
+            # Check if human has legal moves
+            if not self.game.get_legal_moves(BLACK):
+                self.status_label.config(text="No legal moves - AI's turn")
+                self.game.current_player = WHITE
+                self.root.after(100, self.ai_move)
+            else:
+                self.status_label.config(text="Your turn (Black)")
+
+    def game_over(self):
+        black_score, white_score = self.game.get_score()
+        if black_score > white_score:
+            result = f"Game Over! You win! Black: {black_score}, White: {white_score}"
+        elif white_score > black_score:
+            result = f"Game Over! AI wins! Black: {black_score}, White: {white_score}"
+        else:
+            result = f"Game Over! It's a draw! Black: {black_score}, White: {white_score}"
+        self.status_label.config(text=result)
+        self.canvas.create_rectangle(50, 180, 350, 220, fill="blue")
+        self.canvas.create_text(200, 200, text=result, font=("Arial", 14), fill="yellow")
+
+def main():
+    # Create a simple menu window first
+    menu_window = tk.Tk()
+    menu_window.title("Othello Game")
+    menu_window.geometry("350x200")
+    
+    # Center the window
+    menu_window.eval('tk::PlaceWindow . center')
+    
+    # Create and initialize the agent
+    agent = TDAgent()
+    agent_exists, total_episodes = agent.load()  # Try to load existing agent
+    
+    def start_game():
+        menu_window.destroy()
+        game_window = tk.Tk()
+        game_window.title("Othello Game")
+        app = OthelloUI(game_window, agent)
+        game_window.mainloop()
+    
+    def start_training():
+        # Fixed number of episodes
+        episodes = 250000 # You can adjust this value
+            
+        train_btn.config(state=tk.DISABLED, text="Training in progress...")
+        menu_window.update()
+        
+        # Train with specified episodes
+        train_agent(num_episodes=episodes)
+        
+        # Reload the trained agent
+        agent_exists, new_total = agent.load()
+        
+        # Automatically start the game after training
+        start_game()
+    
+    # Create menu components
+    title_label = tk.Label(menu_window, text="Othello with TD-FARL and MCTS", font=("Arial", 14, "bold"))
+    title_label.pack(pady=10)
+    
+    status_text = f"Agent {'loaded successfully' if agent_exists else 'not found'}"
+    status_label = tk.Label(menu_window, text=status_text)
+    status_label.pack(pady=5)
+    
+    # Display total episodes trained (if agent exists)
+    if agent_exists:
+        episodes_trained_label = tk.Label(menu_window, text=f"Total episodes trained: {total_episodes}")
+        episodes_trained_label.pack(pady=5)
+    
+    # Buttons
+    button_frame = tk.Frame(menu_window)
+    button_frame.pack(pady=20)
+    
+    if agent_exists:
+        play_btn = tk.Button(button_frame, text="Play Game", command=start_game)
+        play_btn.pack(side=tk.LEFT, padx=10)
+        
+        train_btn = tk.Button(button_frame, text="Train More & Play", command=start_training)
+        train_btn.pack(side=tk.LEFT, padx=10)
+    else:
+        # If no agent exists, only show train button
+        train_btn = tk.Button(button_frame, text="Train Agent & Play", command=start_training, width=20)
+        train_btn.pack(padx=10)
+    
+    menu_window.mainloop()
 
 if __name__ == "__main__":
-    # Train the agent first
-    trained_agent = train_agent(num_episodes=2500)  # Matches paper's Othello setting 250000
-    # Start the game UI with the trained agent
-    root = tk.Tk()
-    root.title("Othello with Trained TD-FARL and MCTS")
-    app = OthelloUI(root, trained_agent)
-    root.mainloop()
+    main()
